@@ -3,7 +3,7 @@ class Autofuse < Formula
   homepage "https://github.com/Fasen24-AI/autofuse"
   version "4.1"
   url "https://github.com/Fasen24-AI/autofuse/archive/refs/tags/v4.1.tar.gz"
-  sha256 "021408166d59e6ba9d7e831985c90daae3462d63ff752ce0ed77c1ad8a4255fd"
+  sha256 "bb411a9b3594f8dffa9989fdef022d089bd6bf9f954f26668a208d1f6a268f30"
 
   depends_on "sshfs"
   # macFUSE or FUSE-T required but handled at runtime
