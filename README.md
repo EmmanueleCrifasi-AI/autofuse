@@ -306,6 +306,39 @@ Your Mac                              Remote Computer
 3. **FUSE-T** (or macFUSE) makes those files appear as a normal folder on your Mac
 4. **AutoFuse** manages all of this automatically — reconnecting, healing, waking
 
+## Architecture
+
+AutoFuse is three thin layers over **one source of truth**. All mount logic
+lives in the bash engine; the menu-bar app and the MCP server are two
+front-ends that call the same commands, so a human clicking the menu and an
+agent calling a tool always get identical behavior.
+
+```
+   Menu-bar app                MCP server
+   (main.m, ObjC)              (mcp-server/, TypeScript)
+        |                            |
+        |  shells out                |  shells out
+        +-------------+--------------+
+                      v
+              Bash engine  ←── single source of truth
+        (mount.sh + discover.sh)
+                      |
+                      v
+            ssh · sshfs · wake-on-LAN
+```
+
+| Layer | Files | Responsibility |
+|-------|-------|----------------|
+| **Menu-bar app** | `main.m` | Single-file AppKit app: status item, adaptive poll/heal timers, notifications, preferences, setup wizard. Holds no mount logic of its own — every action shells out to the engine. Compiles to a ~370 KB native binary, no runtime dependencies. |
+| **Bash engine** | `mount.sh`, `discover.sh` | The source of truth: probe, mount, unmount, heal-stale, wake-on-LAN, endpoint selection (LAN/VPN/extra IPs), and host-key verification. Pure bash + `ssh`/`sshfs`. Emits line-oriented, parseable status (`host|disk|status:mountpoint`) and uses exit-code-as-signal. |
+| **MCP server** | `mcp-server/` (TypeScript) | Exposes the engine to AI agents over the Model Context Protocol (stdio). Each tool shells to `mount.sh`, parses its output, and returns structured JSON carrying [behavior annotations](https://modelcontextprotocol.io/) (`readOnlyHint`, `destructiveHint`, …) so clients can auto-approve safe reads and gate destructive writes. |
+
+**Why this shape:** the engine is testable in isolation (`bash test.sh`, 82
+cases) and is the only place mount behavior is defined, so the app and the
+agent interface can never drift apart. Adding an action means adding one engine
+subcommand; both front-ends pick it up. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the conventions each layer follows.
+
 ## Team Sharing
 
 Share your computer configs with teammates:
@@ -348,6 +381,18 @@ Open Preferences (Cmd+,) → Cache tab → increase Cache Timeout and enable Ker
 
 **Can't connect to Windows PC**
 Make sure OpenSSH Server is enabled on Windows: Settings → System → Optional Features → OpenSSH Server.
+
+**"sshfs is not installed" / no FUSE backend**
+Install a FUSE backend and SSHFS: either FUSE-T + `sshfs` from [fuse-t.org](https://www.fuse-t.org), or `brew install macfuse && brew install gromgit/fuse/sshfs-mac`. AutoFuse detects either at launch.
+
+**"Host key doesn't match" / security check failed**
+The remote SSH identity changed since AutoFuse learned it. If you reinstalled the server, open **Edit Workstation → Re-learn Host Key**. If you didn't, investigate before reconnecting — this is the warning you want.
+
+**A disk shows "stale" and won't clear**
+The server became unreachable while mounted. AutoFuse force-cleans and re-heals on the next pass; for an immediate fix click **Fix Broken Connections**, or run `autofuse heal <workstation>`.
+
+**Claude/agent doesn't see the MCP tools**
+Node 18+ must be on `PATH`. Check the menu's Claude Integration panel for status, then re-run the one-liner under [Claude Integration](#claude-integration-mcp-server). Verify the server starts with `cd mcp-server && npm test`.
 
 See the full [Setup Guide](docs/GUIDA-SSHFS-FUSE-T.md) for detailed instructions.
 
