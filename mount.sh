@@ -701,31 +701,53 @@ _ensure_key_unlocked() {
 
 # ─── Core helpers ────────────────────────────────────────────────────────────
 
+# SIGKILL the backing sshfs process(es) for a mount point. This is the only
+# reliable way to release a HARD-wedged macFUSE mount: `ls`, `umount` and
+# `diskutil` can all block in uninterruptible kernel I/O on a dead sshfs, but
+# killing sshfs makes the kernel return EIO and the mount drops. Space-delimited
+# match so a sibling mount whose path is a prefix isn't killed too.
+_kill_sshfs_for() {
+    local mp="$1" pid cmd
+    pgrep -f sshfs 2>/dev/null | while read -r pid; do
+        cmd="$(ps -p "$pid" -o args= 2>/dev/null)"
+        echo " $cmd " | grep -qF " $mp " && kill -9 "$pid" 2>/dev/null
+    done
+}
+
+# Liveness probe with a HARD bound that can't be defeated by a wedged mount. A
+# healthy mount lists in milliseconds. If `ls` doesn't return within the timeout
+# the mount is wedged — and since a macFUSE `ls` stuck on a dead sshfs ignores
+# SIGALRM/SIGKILL, the watchdog kills the backing sshfs to release it (which lets
+# the stuck `ls` die and `wait` return). Returns `ls`'s exit code when it
+# completes, non-zero when wedged. Self-healing by design: a wedged mount is
+# dropped here instead of hanging every caller (status-all, heal, panic-check).
+# The old `perl -e 'alarm 2'` could not do this — alarm never reached the
+# uninterruptible ls, so a single dead mount froze the whole engine.
 _alive() {
-    # Timeout ls to avoid hanging on stale mounts (macFUSE can block indefinitely)
-    # macOS has no `timeout` — use perl one-liner as portable alternative
-    # Reduced to 2 seconds for faster stale mount detection
-    perl -e 'alarm 2; exec @ARGV' ls "$1" >/dev/null 2>&1
+    local mp="$1"
+    ls "$mp" >/dev/null 2>&1 &
+    local lspid=$!
+    # Watchdog: only acts if ls is STILL running at the deadline (kill -0 guard),
+    # so a merely slow-but-completed ls never triggers an sshfs kill.
+    ( sleep 2; kill -0 "$lspid" 2>/dev/null && _kill_sshfs_for "$mp"; kill -9 "$lspid" 2>/dev/null ) &
+    local wd=$!
+    wait "$lspid" 2>/dev/null
+    local rc=$?
+    kill "$wd" 2>/dev/null    # cancel the watchdog if ls already finished
+    wait "$wd" 2>/dev/null
+    return $rc
 }
 
 _kill_mount() {
     local mp="$1"
-    # Try graceful first, then force
+    # Kill the backing sshfs FIRST: on a hard-wedged mount umount/diskutil
+    # themselves block, but dropping sshfs releases the kernel so the unmount
+    # below returns immediately instead of hanging.
+    _kill_sshfs_for "$mp"
     umount "$mp" 2>/dev/null
     sleep 0.5
     _force_unmount "$mp"
     umount -f "$mp" 2>/dev/null
-    # Kill any sshfs process for this mount — use fixed-string grep to prevent injection
-    local bn
-    bn="$(basename "$mp")"
-    pgrep -f "sshfs" | while read -r pid; do
-        # Verify the process command line actually references our mount point
-        local cmd
-        cmd="$(ps -p "$pid" -o args= 2>/dev/null)"
-        if echo " $cmd " | grep -qF " $mp "; then
-            kill "$pid" 2>/dev/null
-        fi
-    done
     # Clean up empty mount dir (but not the base ~/workstation)
     local base
     base="$(_json_raw mount_base)"
