@@ -80,7 +80,10 @@ install -m 0755 "$REPO/discover.sh" "$LIBEXEC/discover.sh"
 ok "engine → $LIBEXEC"
 
 # CLI: pin the engine location (mirrors the Homebrew formula's inreplace).
-sed "s|SCRIPT_DIR_PLACEHOLDER|$LIBEXEC|" "$REPO/cli/autofuse" > "$BIN/autofuse"
+# Replace ONLY the assignment, not the literal in the `!= "SCRIPT_DIR_PLACEHOLDER"`
+# guard on the next line — that guard must keep comparing against the original
+# placeholder string so it can tell "was this pinned?".
+sed "s|dir=\"SCRIPT_DIR_PLACEHOLDER\"|dir=\"$LIBEXEC\"|" "$REPO/cli/autofuse" > "$BIN/autofuse"
 chmod 0755 "$BIN/autofuse"
 ok "CLI → $BIN/autofuse"
 
